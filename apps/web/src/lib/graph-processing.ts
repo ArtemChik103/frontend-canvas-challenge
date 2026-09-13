@@ -59,9 +59,47 @@ export interface ConnectionCheckParams {
 }
 
 /**
+ * Нормализует направление соединения к каноническому:
+ * prompt -> generator
+ * generator -> result
+ * Если пользователь протянул связь в обратную сторону (от target к source),
+ * меняет source и target местами, чтобы ребро всегда было валидным для бэкенда.
+ */
+export function normalizeConnection(
+  params: ConnectionCheckParams,
+  nodeTypeMap: ReadonlyMap<string, 'prompt' | 'generator' | 'result'>
+): ConnectionCheckParams | null {
+  const sourceType = nodeTypeMap.get(params.source);
+  const targetType = nodeTypeMap.get(params.target);
+
+  if (!sourceType || !targetType) return null;
+
+  // Прямое направление
+  if (
+    (sourceType === 'prompt' && targetType === 'generator') ||
+    (sourceType === 'generator' && targetType === 'result')
+  ) {
+    return params;
+  }
+
+  // Обратное направление (пользователь тянул от входа к выходу)
+  if (
+    (sourceType === 'generator' && targetType === 'prompt') ||
+    (sourceType === 'result' && targetType === 'generator')
+  ) {
+    return {
+      source: params.target,
+      target: params.source,
+    };
+  }
+
+  return null;
+}
+
+/**
  * O(1) проверка допустимости соединения (A2, P1).
  * Правила:
- * - Только prompt -> generator и generator -> result.
+ * - Только prompt -> generator и generator -> result (в любом направлении перетаскивания).
  * - У каждого входа (target) не более 1 связи.
  * - У генератора (source) не более 1 выхода к результату.
  * - Промпт (source) может соединяться с несколькими генераторами.
@@ -72,30 +110,21 @@ export function validateConnection(params: ConnectionCheckParams, index: GraphIn
     return false;
   }
 
-  const sourceType = index.nodeTypeMap.get(params.source);
-  const targetType = index.nodeTypeMap.get(params.target);
-
-  if (!sourceType || !targetType) {
+  const normalized = normalizeConnection(params, index.nodeTypeMap);
+  if (!normalized) {
     return false;
   }
 
-  // 1. Проверка типов нод
-  const isPromptToGen = sourceType === 'prompt' && targetType === 'generator';
-  const isGenToResult = sourceType === 'generator' && targetType === 'result';
-
-  if (!isPromptToGen && !isGenToResult) {
-    return false;
-  }
-
-  // 2. У любого входа (target) максимум 1 связь
-  const currentIn = index.incomingCount.get(params.target) || 0;
+  // 1. У любого входа (target) максимум 1 связь
+  const currentIn = index.incomingCount.get(normalized.target) || 0;
   if (currentIn >= 1) {
     return false;
   }
 
-  // 3. У генератора максимум 1 выход к результату
+  // 2. У генератора максимум 1 выход к результату
+  const sourceType = index.nodeTypeMap.get(normalized.source);
   if (sourceType === 'generator') {
-    const currentOut = index.outgoingCount.get(params.source) || 0;
+    const currentOut = index.outgoingCount.get(normalized.source) || 0;
     if (currentOut >= 1) {
       return false;
     }

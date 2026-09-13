@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   ReactFlow,
   Background,
@@ -18,6 +18,7 @@ import { pollUntil } from '../lib/poll.js';
 import {
   buildGraphIndex,
   validateConnection,
+  normalizeConnection,
   sanitizeGraphForApi,
   inspectGenerationChain,
 } from '../lib/graph-processing.js';
@@ -41,6 +42,15 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({ space, onSwitchSpace
   const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<FlowEdge>([]);
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
+
+  const nodesRef = useRef<FlowNode[]>(nodes);
+  nodesRef.current = nodes;
+
+  const edgesRef = useRef<FlowEdge[]>(edges);
+  edgesRef.current = edges;
+
+  const viewportRef = useRef<Viewport>(viewport);
+  viewportRef.current = viewport;
 
   const [bannerError, setBannerError] = useState<string | null>(null);
 
@@ -139,72 +149,100 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({ space, onSwitchSpace
 
   // Триггер автосохранения при изменении нод/ребер/viewport
   const triggerSave = useCallback(() => {
-    setNodes((currentNodes) => {
-      setEdges((currentEdges) => {
-        const clean = sanitizeGraphForApi(currentNodes, currentEdges, viewport);
-        queueSave(clean);
-        return currentEdges;
-      });
-      return currentNodes;
-    });
-  }, [viewport, queueSave, setNodes, setEdges]);
+    const clean = sanitizeGraphForApi(nodesRef.current, edgesRef.current, viewportRef.current);
+    queueSave(clean);
+  }, [queueSave]);
 
   // Обработчики нод
   function handlePromptTextChange(nodeId: string, newText: string) {
-    setNodes((nds) =>
-      nds.map((node) => {
+    setNodes((nds) => {
+      const next = nds.map((node) => {
         if (node.id === nodeId) {
           return { ...node, data: { ...node.data, text: newText } };
         }
         return node;
-      }),
-    );
-    triggerSave();
+      });
+      nodesRef.current = next;
+      const clean = sanitizeGraphForApi(next, edgesRef.current, viewportRef.current);
+      queueSave(clean);
+      return next;
+    });
   }
 
   function handleDeleteNode(nodeId: string) {
     // При удалении ноды каскадно удаляем связанные ребра (A2)
-    setNodes((nds) => nds.filter((n) => n.id !== nodeId));
-    setEdges((eds) => eds.filter((e) => e.source !== nodeId && e.target !== nodeId));
-    triggerSave();
+    setNodes((nds) => {
+      const nextNodes = nds.filter((n) => n.id !== nodeId);
+      nodesRef.current = nextNodes;
+      setEdges((eds) => {
+        const nextEdges = eds.filter((e) => e.source !== nodeId && e.target !== nodeId);
+        edgesRef.current = nextEdges;
+        const clean = sanitizeGraphForApi(nextNodes, nextEdges, viewportRef.current);
+        queueSave(clean);
+        return nextEdges;
+      });
+      return nextNodes;
+    });
   }
 
-  // O(N + E) индекс графа для мгновенной O(1) проверки соединений при drag-and-drop (P1)
-  const graphIndex = useMemo(() => {
-    return buildGraphIndex(nodes, edges);
-  }, [nodes, edges]);
 
-  // Валидация соединений на лету (A2, P1)
+  // Валидация соединений на лету (A2, P1) с поддержкой любого направления перетаскивания
   const checkIsValidConnection = useCallback(
     (connection: Connection | FlowEdge) => {
       if (!connection.source || !connection.target) return false;
+      const currentIndex = buildGraphIndex(nodesRef.current, edgesRef.current);
       return validateConnection(
         { source: connection.source, target: connection.target },
-        graphIndex,
+        currentIndex,
       );
     },
-    [graphIndex],
+    [],
   );
 
   const handleConnect = useCallback(
     (params: Connection) => {
-      if (checkIsValidConnection(params)) {
-        setEdges((eds) => addEdge(params, eds));
-        triggerSave();
+      if (!params.source || !params.target) return;
+      const currentIndex = buildGraphIndex(nodesRef.current, edgesRef.current);
+      const normalized = normalizeConnection(
+        { source: params.source, target: params.target },
+        currentIndex.nodeTypeMap,
+      );
+      if (normalized && validateConnection(normalized, currentIndex)) {
+        const sourceType = currentIndex.nodeTypeMap.get(normalized.source);
+        const targetType = currentIndex.nodeTypeMap.get(normalized.target);
+        const sourceHandle = sourceType === 'prompt' ? 'prompt-out' : 'gen-out';
+        const targetHandle = targetType === 'result' ? 'result-in' : 'gen-in';
+
+        setEdges((eds) => {
+          const next = addEdge(
+            {
+              ...params,
+              source: normalized.source,
+              target: normalized.target,
+              sourceHandle,
+              targetHandle,
+            },
+            eds,
+          );
+          edgesRef.current = next;
+          const clean = sanitizeGraphForApi(nodesRef.current, next, viewportRef.current);
+          queueSave(clean);
+          return next;
+        });
       }
     },
-    [checkIsValidConnection, triggerSave, setEdges],
+    [queueSave, setEdges],
   );
 
   // Добавление новых нод
   const handleAddNode = (type: 'prompt' | 'generator' | 'result') => {
-    if (nodes.length >= 20) {
+    if (nodesRef.current.length >= 20) {
       setBannerError('Достигнут максимум нод в одном графе (20)');
       return;
     }
 
     const id = crypto.randomUUID();
-    const offset = nodes.length * 20;
+    const offset = nodesRef.current.length * 20;
 
     const basePositions = {
       prompt: { x: 50 + offset, y: 100 + offset },
@@ -213,7 +251,7 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({ space, onSwitchSpace
     };
 
     const initialData = {
-      prompt: { text: '' },
+      prompt: { text: 'Горы на рассвете' },
       generator: { label: 'Генератор' },
       result: { label: 'Результат', imageUrl: null, errorMessage: null },
     }[type];
@@ -231,8 +269,13 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({ space, onSwitchSpace
       },
     };
 
-    setNodes((nds) => [...nds, newNode]);
-    triggerSave();
+    setNodes((nds) => {
+      const next = [...nds, newNode];
+      nodesRef.current = next;
+      const clean = sanitizeGraphForApi(next, edgesRef.current, viewportRef.current);
+      queueSave(clean);
+      return next;
+    });
   };
 
   // Мониторинг асинхронной генерации
@@ -310,7 +353,7 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({ space, onSwitchSpace
     setBannerError(null);
 
     // 1. Проверяем валидность цепочки
-    const chain = inspectGenerationChain(generatorId, nodes, edges);
+    const chain = inspectGenerationChain(generatorId, nodesRef.current, edgesRef.current);
     if (!chain.isValid) {
       setBannerError(chain.error || 'Неполная цепочка нод');
       return;
@@ -387,7 +430,7 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({ space, onSwitchSpace
 
   function handleRetryGenerate(resultNodeId: string) {
     // Находим генератор, подключенный к этой ноде результата
-    const edge = edges.find((e) => e.target === resultNodeId);
+    const edge = edgesRef.current.find((e) => e.target === resultNodeId);
     if (edge) {
       handleTriggerGenerate(edge.source, 'success');
     }
