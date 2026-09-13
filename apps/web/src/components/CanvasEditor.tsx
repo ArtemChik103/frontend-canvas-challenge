@@ -155,49 +155,45 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({ space, onSwitchSpace
 
   // Обработчики нод
   function handlePromptTextChange(nodeId: string, newText: string) {
-    setNodes((nds) => {
-      const next = nds.map((node) => {
+    setNodes((nds) =>
+      nds.map((node) => {
         if (node.id === nodeId) {
           return { ...node, data: { ...node.data, text: newText } };
         }
         return node;
-      });
-      nodesRef.current = next;
-      const clean = sanitizeGraphForApi(next, edgesRef.current, viewportRef.current);
-      queueSave(clean);
-      return next;
+      }),
+    );
+    nodesRef.current = nodesRef.current.map((node) => {
+      if (node.id === nodeId) {
+        return { ...node, data: { ...node.data, text: newText } };
+      }
+      return node;
     });
+    const clean = sanitizeGraphForApi(nodesRef.current, edgesRef.current, viewportRef.current);
+    queueSave(clean);
   }
 
   function handleDeleteNode(nodeId: string) {
     // При удалении ноды каскадно удаляем связанные ребра (A2)
-    setNodes((nds) => {
-      const nextNodes = nds.filter((n) => n.id !== nodeId);
-      nodesRef.current = nextNodes;
-      setEdges((eds) => {
-        const nextEdges = eds.filter((e) => e.source !== nodeId && e.target !== nodeId);
-        edgesRef.current = nextEdges;
-        const clean = sanitizeGraphForApi(nextNodes, nextEdges, viewportRef.current);
-        queueSave(clean);
-        return nextEdges;
-      });
-      return nextNodes;
-    });
+    setNodes((nds) => nds.filter((n) => n.id !== nodeId));
+    setEdges((eds) => eds.filter((e) => e.source !== nodeId && e.target !== nodeId));
+
+    nodesRef.current = nodesRef.current.filter((n) => n.id !== nodeId);
+    edgesRef.current = edgesRef.current.filter((e) => e.source !== nodeId && e.target !== nodeId);
+
+    const clean = sanitizeGraphForApi(nodesRef.current, edgesRef.current, viewportRef.current);
+    queueSave(clean);
   }
 
-
   // Валидация соединений на лету (A2, P1) с поддержкой любого направления перетаскивания
-  const checkIsValidConnection = useCallback(
-    (connection: Connection | FlowEdge) => {
-      if (!connection.source || !connection.target) return false;
-      const currentIndex = buildGraphIndex(nodesRef.current, edgesRef.current);
-      return validateConnection(
-        { source: connection.source, target: connection.target },
-        currentIndex,
-      );
-    },
-    [],
-  );
+  const checkIsValidConnection = useCallback((connection: Connection | FlowEdge) => {
+    if (!connection.source || !connection.target) return false;
+    const currentIndex = buildGraphIndex(nodesRef.current, edgesRef.current);
+    return validateConnection(
+      { source: connection.source, target: connection.target },
+      currentIndex,
+    );
+  }, []);
 
   const handleConnect = useCallback(
     (params: Connection) => {
@@ -212,23 +208,22 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({ space, onSwitchSpace
         const targetType = currentIndex.nodeTypeMap.get(normalized.target);
         const sourceHandle = sourceType === 'prompt' ? 'prompt-out' : 'gen-out';
         const targetHandle = targetType === 'result' ? 'result-in' : 'gen-in';
+        const edgeId = crypto.randomUUID();
 
-        setEdges((eds) => {
-          const next = addEdge(
-            {
-              ...params,
-              source: normalized.source,
-              target: normalized.target,
-              sourceHandle,
-              targetHandle,
-            },
-            eds,
-          );
-          edgesRef.current = next;
-          const clean = sanitizeGraphForApi(nodesRef.current, next, viewportRef.current);
-          queueSave(clean);
-          return next;
-        });
+        const edgeWithUuid: FlowEdge = {
+          ...params,
+          id: edgeId,
+          source: normalized.source,
+          target: normalized.target,
+          sourceHandle,
+          targetHandle,
+        };
+
+        setEdges((eds) => addEdge(edgeWithUuid, eds));
+        edgesRef.current = addEdge(edgeWithUuid, edgesRef.current);
+
+        const clean = sanitizeGraphForApi(nodesRef.current, edgesRef.current, viewportRef.current);
+        queueSave(clean);
       }
     },
     [queueSave, setEdges],
@@ -269,13 +264,10 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({ space, onSwitchSpace
       },
     };
 
-    setNodes((nds) => {
-      const next = [...nds, newNode];
-      nodesRef.current = next;
-      const clean = sanitizeGraphForApi(next, edgesRef.current, viewportRef.current);
-      queueSave(clean);
-      return next;
-    });
+    setNodes((nds) => [...nds, newNode]);
+    nodesRef.current = [...nodesRef.current, newNode];
+    const clean = sanitizeGraphForApi(nodesRef.current, edgesRef.current, viewportRef.current);
+    queueSave(clean);
   };
 
   // Мониторинг асинхронной генерации

@@ -67,7 +67,7 @@ export interface ConnectionCheckParams {
  */
 export function normalizeConnection(
   params: ConnectionCheckParams,
-  nodeTypeMap: ReadonlyMap<string, 'prompt' | 'generator' | 'result'>
+  nodeTypeMap: ReadonlyMap<string, 'prompt' | 'generator' | 'result'>,
 ): ConnectionCheckParams | null {
   const sourceType = nodeTypeMap.get(params.source);
   const targetType = nodeTypeMap.get(params.target);
@@ -133,6 +133,23 @@ export function validateConnection(params: ConnectionCheckParams, index: GraphIn
   return true;
 }
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const edgeUuidCache = new Map<string, string>();
+
+/**
+ * Гарантирует, что id ребра соответствует формату UUID (требование OpenAPI схемы контракта).
+ * React Flow генерирует id вида "xy-edge__...", которые отклоняются валидатором Fastify 400.
+ */
+export function getOrGenerateEdgeUuid(edgeId: string): string {
+  if (UUID_REGEX.test(edgeId)) return edgeId;
+  let cached = edgeUuidCache.get(edgeId);
+  if (!cached) {
+    cached = crypto.randomUUID();
+    edgeUuidCache.set(edgeId, cached);
+  }
+  return cached;
+}
+
 /**
  * Преобразует внутреннее состояние React Flow в чистую схему GraphData для REST API.
  * Выполняется строго за один проход O(N + E) без выделения промежуточных массивов.
@@ -144,30 +161,35 @@ export function sanitizeGraphForApi(
 ): GraphData {
   const nLen = nodes.length;
   const cleanNodes: NodeData[] = new Array(nLen);
+  const nodeTypeMap = new Map<string, 'prompt' | 'generator' | 'result'>();
 
   for (let i = 0; i < nLen; i++) {
     const node = nodes[i];
     const type = node.type as 'prompt' | 'generator' | 'result';
+    nodeTypeMap.set(node.id, type);
+
+    const clampedX = Math.max(-10000, Math.min(10000, Math.round(node.position.x)));
+    const clampedY = Math.max(-10000, Math.min(10000, Math.round(node.position.y)));
 
     if (type === 'prompt') {
       cleanNodes[i] = {
         id: node.id,
         type: 'prompt',
-        position: { x: Math.round(node.position.x), y: Math.round(node.position.y) },
+        position: { x: clampedX, y: clampedY },
         data: { text: (node.data?.text as string) || '' },
       };
     } else if (type === 'generator') {
       cleanNodes[i] = {
         id: node.id,
         type: 'generator',
-        position: { x: Math.round(node.position.x), y: Math.round(node.position.y) },
+        position: { x: clampedX, y: clampedY },
         data: { label: (node.data?.label as string) || 'Генератор' },
       };
     } else {
       cleanNodes[i] = {
         id: node.id,
         type: 'result',
-        position: { x: Math.round(node.position.x), y: Math.round(node.position.y) },
+        position: { x: clampedX, y: clampedY },
         data: { label: (node.data?.label as string) || 'Результат' },
       };
     }
@@ -178,12 +200,29 @@ export function sanitizeGraphForApi(
 
   for (let i = 0; i < eLen; i++) {
     const edge = edges[i];
+    const sourceType = nodeTypeMap.get(edge.source);
+    const targetType = nodeTypeMap.get(edge.target);
+
+    // Нормализуем направление ребра для бэкенда (prompt -> generator -> result):
+    let source = edge.source;
+    let target = edge.target;
+
+    if (sourceType === 'generator' && targetType === 'prompt') {
+      source = edge.target;
+      target = edge.source;
+    } else if (sourceType === 'result' && targetType === 'generator') {
+      source = edge.target;
+      target = edge.source;
+    }
+
     cleanEdges[i] = {
-      id: edge.id,
-      source: edge.source,
-      target: edge.target,
+      id: getOrGenerateEdgeUuid(edge.id),
+      source,
+      target,
     };
   }
+
+  const zoomClamped = Math.max(0.1, Math.min(4, viewport.zoom));
 
   return {
     nodes: cleanNodes,
@@ -191,7 +230,7 @@ export function sanitizeGraphForApi(
     viewport: {
       x: Math.round(viewport.x),
       y: Math.round(viewport.y),
-      zoom: Number(viewport.zoom.toFixed(2)),
+      zoom: Number(zoomClamped.toFixed(2)),
     },
   };
 }
@@ -206,7 +245,8 @@ export interface GenerationChain {
 
 /**
  * Валидация цепочки перед запуском генерации (A3, A4, B4).
- * Проверяет наличие входящего промпта с непустым текстом и исходящего результата.
+ * Проверяет наличие входящего промпта с непустым текстом и исходящего результата
+ * с явной проверкой типов нод во избежание ложного определения result ноды как промпта.
  */
 export function inspectGenerationChain(
   generatorId: string,
@@ -223,11 +263,23 @@ export function inspectGenerationChain(
 
   for (let i = 0; i < edges.length; i++) {
     const edge = edges[i];
-    if (edge.target === generatorId) {
-      promptId = edge.source;
+    const sourceNode = nodeMap.get(edge.source);
+    const targetNode = nodeMap.get(edge.target);
+
+    // Связь с промптом: либо prompt -> generator, либо generator -> prompt
+    if (
+      (edge.target === generatorId && sourceNode?.type === 'prompt') ||
+      (edge.source === generatorId && targetNode?.type === 'prompt')
+    ) {
+      promptId = sourceNode?.type === 'prompt' ? edge.source : edge.target;
     }
-    if (edge.source === generatorId) {
-      resultNodeId = edge.target;
+
+    // Связь с результатом: либо generator -> result, либо result -> generator
+    if (
+      (edge.source === generatorId && targetNode?.type === 'result') ||
+      (edge.target === generatorId && sourceNode?.type === 'result')
+    ) {
+      resultNodeId = targetNode?.type === 'result' ? edge.target : edge.source;
     }
   }
 
