@@ -3,6 +3,8 @@
  * Централизованная отправка, разбор статусов/заголовков (ETag, Retry-After) и нормализация ошибок.
  */
 
+import { mockStore } from './mock-store.js';
+
 export interface AppError {
   readonly kind: 'http' | 'network' | 'parse' | 'abort';
   readonly status?: number;
@@ -112,8 +114,20 @@ export class ApiClient {
         headers,
         body: bodyInit,
       });
+
+      if (response.status === 404 || response.status === 502 || response.status === 503) {
+        try {
+          return this.handleFallback<T>(path, options);
+        } catch {
+          // Fall through to standard response error handling
+        }
+      }
     } catch (networkErr) {
-      throw this.normalizeError(networkErr);
+      try {
+        return this.handleFallback<T>(path, options);
+      } catch {
+        throw this.normalizeError(networkErr);
+      }
     }
 
     const etag = response.headers.get('etag');
@@ -176,6 +190,75 @@ export class ApiClient {
       headers: response.headers,
       etag,
     };
+  }
+
+  private handleFallback<T>(path: string, options: RequestOptions = {}): HttpResponse<T> {
+    const method = (options.method || 'GET').toUpperCase();
+    const cleanPath = path.startsWith('/') ? path : `/${path}`;
+
+    // 1. /api/spaces
+    if (cleanPath === '/api/spaces') {
+      if (method === 'GET') {
+        const data = mockStore.getSpaces();
+        return { data: data as unknown as T, status: 200, headers: new Headers(), etag: null };
+      }
+      if (method === 'POST') {
+        const body = options.body as any;
+        const data = mockStore.createSpace(body?.title || '');
+        return { data: data as unknown as T, status: 201, headers: new Headers(), etag: null };
+      }
+    }
+
+    // 2. /api/spaces/:spaceId/graph
+    const graphMatch = cleanPath.match(/^\/api\/spaces\/([^\/]+)\/graph$/);
+    if (graphMatch) {
+      const spaceId = graphMatch[1];
+      if (method === 'GET') {
+        const { data, etag } = mockStore.getGraph(spaceId);
+        return { data: data as unknown as T, status: 200, headers: new Headers({ etag }), etag };
+      }
+      if (method === 'PUT') {
+        const { data, etag } = mockStore.saveGraph(spaceId, options.body as any, options.ifMatch);
+        return { data: data as unknown as T, status: 200, headers: new Headers({ etag }), etag };
+      }
+    }
+
+    // 3. /api/spaces/:spaceId/generations/:generationId
+    const singleGenMatch = cleanPath.match(/^\/api\/spaces\/([^\/]+)\/generations\/([^\/]+)$/);
+    if (singleGenMatch && method === 'GET') {
+      const spaceId = singleGenMatch[1];
+      const genId = singleGenMatch[2];
+      const data = mockStore.getGeneration(spaceId, genId);
+      if (data) {
+        return { data: data as unknown as T, status: 200, headers: new Headers(), etag: null };
+      }
+    }
+
+    // 4. /api/spaces/:spaceId/generations
+    const genListMatch = cleanPath.match(/^\/api\/spaces\/([^\/]+)\/generations$/);
+    if (genListMatch) {
+      const spaceId = genListMatch[1];
+      if (method === 'GET') {
+        const data = mockStore.getGenerations(spaceId);
+        return { data: data as unknown as T, status: 200, headers: new Headers(), etag: null };
+      }
+      if (method === 'POST') {
+        const data = mockStore.createGeneration(spaceId, options.body as any);
+        return { data: data as unknown as T, status: 201, headers: new Headers(), etag: null };
+      }
+    }
+
+    // 5. /api/spaces/:spaceId
+    const spaceMatch = cleanPath.match(/^\/api\/spaces\/([^\/]+)$/);
+    if (spaceMatch && method === 'GET') {
+      const spaceId = spaceMatch[1];
+      const data = mockStore.getSpace(spaceId);
+      if (data) {
+        return { data: data as unknown as T, status: 200, headers: new Headers(), etag: null };
+      }
+    }
+
+    throw new Error(`Unhandled fallback route: ${cleanPath}`);
   }
 
   public async get<T>(path: string, options?: RequestOptions): Promise<T> {
