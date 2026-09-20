@@ -75,7 +75,7 @@ export const ResultNode: React.FC<NodeProps> = ({ id, data, selected }) => {
                 src={
                   imageUrl.startsWith('http')
                     ? imageUrl
-                    : `${import.meta.env.VITE_API_URL || 'http://127.0.0.1:4001'}${imageUrl}`
+                    : `${(import.meta.env.VITE_API_URL || '').replace(/\/+$/, '')}${imageUrl.startsWith('/') ? imageUrl : `/${imageUrl}`}`
                 }
                 alt="Сгенерированное изображение"
                 className="result-image"
@@ -85,7 +85,7 @@ export const ResultNode: React.FC<NodeProps> = ({ id, data, selected }) => {
                   href={
                     imageUrl.startsWith('http')
                       ? imageUrl
-                      : `${import.meta.env.VITE_API_URL || 'http://127.0.0.1:4001'}${imageUrl}`
+                      : `${(import.meta.env.VITE_API_URL || '').replace(/\/+$/, '')}${imageUrl.startsWith('/') ? imageUrl : `/${imageUrl}`}`
                   }
                   target="_blank"
                   rel="noopener noreferrer"
