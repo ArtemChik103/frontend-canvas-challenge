@@ -82,6 +82,14 @@ export class ApiClient {
     path: string,
     options: RequestOptions = {},
   ): Promise<HttpResponse<T>> {
+    if (!this.baseUrl && import.meta.env.PROD) {
+      try {
+        return this.handleFallback<T>(path, options);
+      } catch (fallbackErr) {
+        throw this.normalizeError(fallbackErr);
+      }
+    }
+
     const url = this.buildUrl(path);
     const headers = new Headers(options.headers);
 
