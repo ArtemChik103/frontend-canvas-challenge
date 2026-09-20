@@ -2,7 +2,7 @@
 
 [![Live Demo](https://img.shields.io/badge/Live%20Demo-Vercel%20Online-black?style=for-the-badge&logo=vercel&logoColor=white)](https://frontend-canvas-challenge.vercel.app)
 
-**🚀 Live Application (Vercel):** [https://frontend-canvas-challenge.vercel.app](https://frontend-canvas-challenge.vercel.app)
+**Live Application (Vercel):** [https://frontend-canvas-challenge.vercel.app](https://frontend-canvas-challenge.vercel.app)
 
 Фронтенд-приложение на React 19, TypeScript, Vite и React Flow (`@xyflow/react`), расположенное в `apps/web` (`@canvas/web`), реализующее визуальный редактор цепочки нод «текст → генератор → результат», сериализованную очередь сохранения с ETag и симуляцию генерации изображений.
 
